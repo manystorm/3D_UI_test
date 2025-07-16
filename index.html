@@ -662,32 +662,11 @@
 
       // XR 세션 관리
       function onRequestSession() {
-        // 기존 inline 세션이 있다면 종료
-        if (inlineSession) {
-          inlineSession.end();
-          inlineSession = null;
-        }
-        
-        return navigator.xr.requestSession('immersive-vr', {
-          requiredFeatures: ['local'],
-          optionalFeatures: ['bounded-floor']
-        }).then((session) => {
+        return navigator.xr.requestSession('immersive-vr').then((session) => {
           immersiveSession = session;
           session.isImmersive = true;
           onSessionStarted(session);
           xrButton.textContent = 'Exit VR';
-        }).catch((error) => {
-          xrButton.textContent = 'VR Session Failed';
-          
-          // 실패 시 inline 세션 재시작
-          setTimeout(() => {
-            navigator.xr.requestSession('inline').then((session) => {
-              inlineSession = session;
-              onSessionStarted(session);
-              updateFov();
-              xrButton.textContent = 'Enter VR';
-            });
-          }, 2000);
         });
       }
 
@@ -700,70 +679,23 @@
       function onSessionStarted(session) {
         session.addEventListener('end', onSessionEnded);
 
-        try {
-          const gl = renderer.getContext();
-          if (!gl) {
-            throw new Error('WebGL 컨텍스트를 가져올 수 없습니다');
+        renderer.xr.setSession(session);
+
+        let refSpaceType = session.isImmersive ? 'local' : 'viewer';
+        session.requestReferenceSpace(refSpaceType).then((refSpace) => {
+          if (session.isImmersive) {
+            xrImmersiveRefSpace = refSpace;
+          } else {
+            xrInlineRefSpace = refSpace;
           }
-
-          let glLayer = new XRWebGLLayer(session, gl);
-          session.updateRenderState({ baseLayer: glLayer });
-
-          // Reference Space 요청 시 fallback 추가
-          let refSpaceType = session.isImmersive ? 'local' : 'viewer';
-          
-          session.requestReferenceSpace(refSpaceType).then((refSpace) => {
-            if (session.isImmersive) {
-              xrImmersiveRefSpace = refSpace;
-            } else {
-              xrInlineRefSpace = refSpace;
-            }
-            renderer.xr.setSession(session);
-          }).catch((error) => {
-            // local이 실패하면 local-floor로 시도
-            if (refSpaceType === 'local') {
-              return session.requestReferenceSpace('local-floor');
-            }
-            throw error;
-          }).then((refSpace) => {
-            if (refSpace) {
-              xrImmersiveRefSpace = refSpace;
-              renderer.xr.setSession(session);
-            }
-          }).catch((error) => {
-            // 마지막 시도: viewer
-            session.requestReferenceSpace('viewer').then((refSpace) => {
-              if (session.isImmersive) {
-                xrImmersiveRefSpace = refSpace;
-              } else {
-                xrInlineRefSpace = refSpace;
-              }
-              renderer.xr.setSession(session);
-            }).catch((finalError) => {
-              session.end();
-            });
-          });
-          
-        } catch (error) {
-          session.end();
-        }
+          renderer.xr.setSession(session);
+        });
       }
 
       function onSessionEnded(event) {
         if (event.session.isImmersive) {
           immersiveSession = null;
           xrButton.textContent = 'Enter VR';
-          
-          // VR 종료 후 inline 세션 재시작
-          setTimeout(() => {
-            navigator.xr.requestSession('inline').then((session) => {
-              inlineSession = session;
-              onSessionStarted(session);
-              updateFov();
-            });
-          }, 100);
-        } else {
-          inlineSession = null;
         }
       }
 
@@ -774,33 +706,33 @@
       async function init() {
         initThree();
 
-        // WebXR 초기화
-        const supported = await navigator.xr.isSessionSupported('immersive-vr');
-        if (supported) {
-          xrButton.textContent = 'Enter VR';
-          xrButton.disabled = false;
-          xrButton.onclick = () => {
-            if (immersiveSession) {
-              onEndSession();
+        // WebXR 지원 확인 및 버튼 설정
+        if (navigator.xr) {
+          navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
+            if (supported) {
+              xrButton.textContent = 'Enter VR';
+              xrButton.disabled = false;
+              xrButton.onclick = () => {
+                if (immersiveSession) {
+                  onEndSession();
+                } else {
+                  onRequestSession();
+                }
+              };
             } else {
-              // 버튼 비활성화로 중복 클릭 방지
-              xrButton.disabled = true;
-              xrButton.textContent = 'Starting VR...';
-              
-              onRequestSession().finally(() => {
-                xrButton.disabled = false;
-              });
+              xrButton.textContent = 'VR not supported';
             }
-          };
-        } else {
-          xrButton.textContent = 'VR not supported';
-        }
+          });
 
-        // 인라인 세션 시작
-        const session = await navigator.xr.requestSession('inline');
-        inlineSession = session;
-        onSessionStarted(session);
-        updateFov();
+          // 인라인 세션 시작
+          navigator.xr.requestSession('inline').then((session) => {
+            inlineSession = session;
+            onSessionStarted(session);
+            updateFov();
+          });
+        } else {
+          xrButton.textContent = 'WebXR not supported';
+        }
 
         await loadFont();
         updateNumberDisplays();
@@ -810,6 +742,7 @@
         createKeyboard();
 
         renderer.setAnimationLoop(animate);
+        console.log('WebXR 3D 덧셈 계산기 초기화 완료');
       }
 
       init();
