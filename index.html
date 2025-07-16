@@ -1,0 +1,752 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1, user-scalable=no'>
+    <meta name='mobile-web-app-capable' content='yes'>
+    <meta name='apple-mobile-web-app-capable' content='yes'>
+    <title>WebXR 3D Addition Calculator</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: Arial, sans-serif;
+        background: #000;
+        color: #fff;
+        overflow: hidden;
+      }
+      header {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        z-index: 1000;
+        background: rgba(0, 0, 0, 0.8);
+        padding: 15px;
+        border-radius: 8px;
+        backdrop-filter: blur(10px);
+        min-width: 250px;
+      }
+      #controls {
+        margin-top: 10px;
+      }
+      input[type="range"] {
+        width: 150px;
+        margin: 5px 0;
+      }
+      .info {
+        font-size: 14px;
+        margin-top: 10px;
+        color: #ccc;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        cursor: crosshair;
+      }
+      #xrButton {
+        display: inline-block;
+        margin: 10px 0;
+        padding: 12px 24px;
+        border: none;
+        border-radius: 4px;
+        background: #1976d2;
+        color: white;
+        font-size: 16px;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      #xrButton:hover {
+        background: #1565c0;
+      }
+      #xrButton:disabled {
+        background: #666;
+        cursor: not-allowed;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h3>WebXR 3D 덧셈 계산기</h3>
+      <p>키보드로 숫자를 입력하고 정육면체를 클릭하여 덧셈하세요</p>
+      <button id="xrButton" disabled>XR 지원 확인 중...</button>
+      <div id="controls">
+        <input id='vertFOV' value='75' min='30' max='150' step='5' type='range'/>
+        <label id='vertFOVLabel' for="vertFOV">FOV: 75°</label>
+      </div>
+      <div class="info">
+        마우스 드래그 또는 터치로 시점 조절<br>
+        L/R 버튼으로 입력 모드 전환<br>
+        숫자 키보드로 값 즉시 적용<br>
+        정육면체 클릭으로 덧셈 계산<br>
+        Clear 버튼으로 숫자 초기화
+      </div>
+    </header>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script type="module">
+      // 전역 변수
+      let scene, camera, renderer, cube;
+      let inlineSession = null;
+      let immersiveSession = null;
+      let xrInlineRefSpace = null;
+      let xrImmersiveRefSpace = null;
+      let raycaster, mouse;
+      let isMouseDown = false;
+      let previousMousePosition = { x: 0, y: 0 };
+      let font = null;
+
+      // 왼쪽, 오른쪽 숫자와 결과
+      let leftNumber = 0;
+      let rightNumber = 0;
+      let result = 0;
+
+      // 입력 시스템
+      let currentInputSide = "left"; // "left" 또는 "right"
+
+      // UI 요소들
+      let numberButtons = [];
+      let clearButton = null;
+      let leftToggleButton = null;
+      let rightToggleButton = null;
+      let modeIndicator = null;
+
+      // 표시 메시들
+      let leftNumberMesh = null;
+      let rightNumberMesh = null;
+      let resultMesh = null;
+      let plusSignMesh = null;
+      let equalsSignMesh = null;
+
+      // XR 버튼
+      let xrButton = document.getElementById('xrButton');
+
+      // FOV 조절
+      let fov = document.getElementById('vertFOV');
+      let fovLabel = document.getElementById('vertFOVLabel');
+
+      function updateFov() {
+        let value = parseFloat(fov.value);
+        let radValue = value * (Math.PI / 180);
+
+        if (inlineSession) {
+          inlineSession.updateRenderState({
+            inlineVerticalFieldOfView: radValue
+          });
+        }
+
+        fovLabel.textContent = `FOV: ${value}°`;
+      }
+      fov.addEventListener('input', updateFov);
+
+      // 폰트 로드
+      function loadFont() {
+        const loader = new THREE.FontLoader();
+
+        return new Promise((resolve, reject) => {
+          loader.load(
+            'https://threejs.org/examples/fonts/helvetiker_regular.typeface.json',
+            (loadedFont) => {
+              font = loadedFont;
+              console.log('폰트 로드 완료');
+              resolve(font);
+            },
+            undefined,
+            (error) => {
+              console.error('폰트 로드 실패:', error);
+              reject(error);
+            }
+          );
+        });
+      }
+
+      // 3D 텍스트 생성 함수
+      function create3DText(text, size = 0.5, position = { x: 0, y: 0, z: 0 }, color = 0x00ff88) {
+        if (!font || text === null || text === undefined) return null;
+
+        const textGeometry = new THREE.TextGeometry(text.toString(), {
+          font: font,
+          size: size,
+          height: size * 0.2,
+          curveSegments: 12,
+          bevelEnabled: true,
+          bevelThickness: size * 0.03,
+          bevelSize: size * 0.02,
+          bevelOffset: 0,
+          bevelSegments: 5
+        });
+
+        textGeometry.computeBoundingBox();
+        const textWidth = textGeometry.boundingBox.max.x - textGeometry.boundingBox.min.x;
+        const textHeight = textGeometry.boundingBox.max.y - textGeometry.boundingBox.min.y;
+
+        textGeometry.translate(-textWidth / 2, -textHeight / 2, 0);
+
+        const textMaterial = new THREE.MeshLambertMaterial({
+          color: color,
+          transparent: true,
+          opacity: 0.9
+        });
+
+        const textMesh = new THREE.Mesh(textGeometry, textMaterial);
+        textMesh.position.set(position.x, position.y, position.z);
+
+        return textMesh;
+      }
+
+      // 숫자 표시 업데이트
+      function updateNumberDisplays() {
+        // 왼쪽 숫자 표시
+        if (leftNumberMesh) {
+          scene.remove(leftNumberMesh);
+          if (leftNumberMesh.geometry) leftNumberMesh.geometry.dispose();
+          if (leftNumberMesh.material) leftNumberMesh.material.dispose();
+        }
+        const leftColor = (currentInputSide === "left") ? 0x00ff00 : 0x00aaff;
+        leftNumberMesh = create3DText(leftNumber.toString(), 0.4, { x: -3, y: 2, z: -4 }, leftColor);
+        if (leftNumberMesh) scene.add(leftNumberMesh);
+
+        // 오른쪽 숫자 표시
+        if (rightNumberMesh) {
+          scene.remove(rightNumberMesh);
+          if (rightNumberMesh.geometry) rightNumberMesh.geometry.dispose();
+          if (rightNumberMesh.material) rightNumberMesh.material.dispose();
+        }
+        const rightColor = (currentInputSide === "right") ? 0x00ff00 : 0xaa00ff;
+        rightNumberMesh = create3DText(rightNumber.toString(), 0.4, { x: 3, y: 2, z: -4 }, rightColor);
+        if (rightNumberMesh) scene.add(rightNumberMesh);
+
+        // 결과 표시
+        if (resultMesh) {
+          scene.remove(resultMesh);
+          if (resultMesh.geometry) resultMesh.geometry.dispose();
+          if (resultMesh.material) resultMesh.material.dispose();
+        }
+        resultMesh = create3DText(result.toString(), 0.5, { x: 0, y: 0.5, z: -4 }, 0x00ff00);
+        if (resultMesh) scene.add(resultMesh);
+      }
+
+      // 모드 표시 업데이트
+      function updateModeIndicator() {
+        if (modeIndicator) {
+          scene.remove(modeIndicator);
+          if (modeIndicator.geometry) modeIndicator.geometry.dispose();
+          if (modeIndicator.material) modeIndicator.material.dispose();
+        }
+        const modeText = currentInputSide === "left" ? "왼쪽 입력 모드" : "오른쪽 입력 모드";
+        const modeColor = currentInputSide === "left" ? 0x00aaff : 0xaa00ff;
+        modeIndicator = create3DText(modeText, 0.15, { x: 0, y: -0.5, z: -4 }, modeColor);
+        if (modeIndicator) scene.add(modeIndicator);
+      }
+
+      // 수식 기호 생성
+      function createMathSymbols() {
+        // + 기호
+        plusSignMesh = create3DText("+", 0.3, { x: -0.7, y: 2, z: -4 }, 0xffffff);
+        if (plusSignMesh) scene.add(plusSignMesh);
+
+        // = 기호
+        equalsSignMesh = create3DText("=", 0.3, { x: 0.7, y: 2, z: -4 }, 0xffffff);
+        if (equalsSignMesh) scene.add(equalsSignMesh);
+      }
+
+      // 3D 버튼 생성 함수
+      function createButton(text, position, size = 0.25, color = 0x4444ff) {
+        const group = new THREE.Group();
+
+        // 버튼 배경
+        const buttonGeometry = new THREE.BoxGeometry(size * 1.5, size * 1.2, size * 0.3);
+        const buttonMaterial = new THREE.MeshLambertMaterial({
+          color: color,
+          transparent: true,
+          opacity: 0.8
+        });
+        const buttonMesh = new THREE.Mesh(buttonGeometry, buttonMaterial);
+        group.add(buttonMesh);
+
+        // 버튼 텍스트
+        const textMesh = create3DText(text, size * 0.8, { x: 0, y: 0, z: size * 0.2 }, 0xffffff);
+        if (textMesh) {
+          group.add(textMesh);
+        }
+
+        group.position.set(position.x, position.y, position.z);
+        group.userData = {
+          type: 'button',
+          value: text,
+          originalColor: color,
+          buttonMesh: buttonMesh,
+          textMesh: textMesh
+        };
+
+        return group;
+      }
+
+      // 키보드 생성 (중앙에 하나만)
+      function createKeyboard() {
+        const buttonSize = 0.2;
+        const spacing = 0.4;
+        const baseY = -1.5;
+        const baseZ = -4;
+        const baseX = 0; // 중앙 배치
+
+        // 숫자 키보드
+        const numbers = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+
+        for (let i = 0; i < numbers.length; i++) {
+          const row = Math.floor(i / 3);
+          const col = i % 3;
+
+          let x, y;
+          if (numbers[i] === '0') {
+            x = baseX;
+            y = baseY - 3 * spacing;
+          } else {
+            x = baseX + (col - 1) * spacing;
+            y = baseY - (2 - row) * spacing;
+          }
+
+          const button = createButton(numbers[i], { x, y, z: baseZ }, buttonSize);
+          scene.add(button);
+          numberButtons.push(button);
+        }
+
+        // Clear 버튼
+        clearButton = createButton('Clear', { x: baseX - spacing, y: baseY - 3 * spacing, z: baseZ }, buttonSize, 0xaa0000);
+        scene.add(clearButton);
+
+        // 왼쪽/오른쪽 모드 토글 버튼
+        leftToggleButton = createButton('L', { x: baseX - 2 * spacing, y: baseY - 3 * spacing, z: baseZ }, buttonSize, 0x0088ff);
+        scene.add(leftToggleButton);
+
+        rightToggleButton = createButton('R', { x: baseX + 2 * spacing, y: baseY - 3 * spacing, z: baseZ }, buttonSize, 0x8800ff);
+        scene.add(rightToggleButton);
+      }
+
+      // 버튼 상태 업데이트
+      function updateToggleButtons() {
+        if (leftToggleButton && leftToggleButton.userData.buttonMesh) {
+          const leftColor = (currentInputSide === "left") ? 0x00aaff : 0x0088ff;
+          leftToggleButton.userData.buttonMesh.material.color.setHex(leftColor);
+          leftToggleButton.userData.originalColor = leftColor;
+        }
+
+        if (rightToggleButton && rightToggleButton.userData.buttonMesh) {
+          const rightColor = (currentInputSide === "right") ? 0xaa00ff : 0x8800ff;
+          rightToggleButton.userData.buttonMesh.material.color.setHex(rightColor);
+          rightToggleButton.userData.originalColor = rightColor;
+        }
+      }
+
+      // 버튼 클릭 애니메이션
+      function animateButtonClick(button) {
+        const originalScale = button.scale.clone();
+        let progress = 0;
+        const animationDuration = 150;
+
+        function animate() {
+          progress += 16;
+          const t = Math.min(progress / animationDuration, 1);
+
+          const scale = 1 + Math.sin(t * Math.PI) * 0.2;
+          button.scale.setScalar(scale);
+
+          if (button.userData.buttonMesh) {
+            const intensity = 1 + Math.sin(t * Math.PI) * 0.5;
+            const color = new THREE.Color(button.userData.originalColor);
+            color.multiplyScalar(intensity);
+            button.userData.buttonMesh.material.color = color;
+          }
+
+          if (t < 1) {
+            requestAnimationFrame(animate);
+          } else {
+            button.scale.copy(originalScale);
+            if (button.userData.buttonMesh) {
+              button.userData.buttonMesh.material.color.setHex(button.userData.originalColor);
+            }
+          }
+        }
+
+        animate();
+      }
+
+      // 숫자 입력 애니메이션
+      function animateNumberInput(mesh) {
+        if (!mesh) return;
+
+        let progress = 0;
+        const animationDuration = 300;
+        const originalScale = mesh.scale.clone();
+
+        function animate() {
+          progress += 16;
+          const t = Math.min(progress / animationDuration, 1);
+
+          // 크기 애니메이션
+          const scale = 1 + Math.sin(t * Math.PI) * 0.3;
+          mesh.scale.setScalar(scale);
+
+          // 색상 애니메이션
+          const intensity = 1 + Math.sin(t * Math.PI * 2) * 0.4;
+          const color = new THREE.Color(0x00ff00);
+          color.multiplyScalar(intensity);
+          mesh.material.color = color;
+
+          if (t < 1) {
+            requestAnimationFrame(animate);
+          } else {
+            mesh.scale.copy(originalScale);
+            // 원래 색상으로 복원
+            const finalColor = (currentInputSide === "left") ? 0x00aaff : 0xaa00ff;
+            mesh.material.color.setHex(finalColor);
+          }
+        }
+
+        animate();
+      }
+
+      // 버튼 클릭 처리
+      function handleButtonClick(button) {
+        animateButtonClick(button);
+
+        const value = button.userData.value;
+
+        if (value === 'L') {
+          currentInputSide = "left";
+          updateToggleButtons();
+          updateNumberDisplays();
+          updateModeIndicator();
+        } else if (value === 'R') {
+          currentInputSide = "right";
+          updateToggleButtons();
+          updateNumberDisplays();
+          updateModeIndicator();
+        } else if (value === 'Clear') {
+          if (currentInputSide === 'left') {
+            leftNumber = 0;
+          } else {
+            rightNumber = 0;
+          }
+          updateNumberDisplays();
+        } else if (!isNaN(value)) {
+          // 숫자 입력 시 즉시 적용
+          const numValue = parseInt(value);
+          if (currentInputSide === 'left') {
+            // 한 자리씩 추가하는 방식
+            leftNumber = leftNumber * 10 + numValue;
+            if (leftNumber > 999999) leftNumber = 999999; // 6자리 제한
+            updateNumberDisplays();
+            animateNumberInput(leftNumberMesh);
+          } else {
+            rightNumber = rightNumber * 10 + numValue;
+            if (rightNumber > 999999) rightNumber = 999999; // 6자리 제한
+            updateNumberDisplays();
+            animateNumberInput(rightNumberMesh);
+          }
+        }
+      }
+
+      // 덧셈 계산 및 애니메이션
+      function calculateAddition() {
+        result = leftNumber + rightNumber;
+        updateNumberDisplays();
+
+        // 결과 애니메이션
+        if (resultMesh) {
+          let progress = 0;
+          const animationDuration = 500;
+          const originalScale = resultMesh.scale.clone();
+
+          function animateResult() {
+            progress += 16;
+            const t = Math.min(progress / animationDuration, 1);
+
+            // 크기 애니메이션
+            const scale = 1 + Math.sin(t * Math.PI) * 0.3;
+            resultMesh.scale.setScalar(scale);
+
+            // 색상 애니메이션
+            const intensity = 1 + Math.sin(t * Math.PI * 4) * 0.3;
+            const color = new THREE.Color(0x00ff00);
+            color.multiplyScalar(intensity);
+            resultMesh.material.color = color;
+
+            if (t < 1) {
+              requestAnimationFrame(animateResult);
+            } else {
+              resultMesh.scale.copy(originalScale);
+              resultMesh.material.color.setHex(0x00ff00);
+            }
+          }
+
+          animateResult();
+        }
+      }
+
+      // Three.js 초기화
+      function initThree() {
+        scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111);
+
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 0, 0);
+
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.xr.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // 정육면체 생성
+        const geometry = new THREE.BoxGeometry(1, 1, 1);
+        const material = new THREE.MeshBasicMaterial({
+          color: 0x4CAF50,
+          transparent: true,
+          opacity: 0.9
+        });
+        cube = new THREE.Mesh(geometry, material);
+        cube.position.set(0, 0, -3);
+        scene.add(cube);
+
+        // 조명 추가
+        const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        directionalLight.position.set(1, 1, 1);
+        scene.add(directionalLight);
+
+        raycaster = new THREE.Raycaster();
+        mouse = new THREE.Vector2();
+
+        window.addEventListener('resize', onWindowResize);
+        renderer.domElement.addEventListener('mousedown', onMouseDown);
+        renderer.domElement.addEventListener('mousemove', onMouseMove);
+        renderer.domElement.addEventListener('mouseup', onMouseUp);
+        renderer.domElement.addEventListener('click', onMouseClick);
+        renderer.domElement.addEventListener('touchstart', onTouchStart);
+        renderer.domElement.addEventListener('touchmove', onTouchMove);
+        renderer.domElement.addEventListener('touchend', onTouchEnd);
+        renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+      }
+
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      }
+
+      function onMouseDown(event) {
+        isMouseDown = true;
+        previousMousePosition.x = event.clientX;
+        previousMousePosition.y = event.clientY;
+      }
+
+      function onMouseMove(event) {
+        if (isMouseDown) {
+          const deltaMove = {
+            x: event.clientX - previousMousePosition.x,
+            y: event.clientY - previousMousePosition.y
+          };
+
+          const deltaRotationQuaternion = new THREE.Quaternion()
+            .setFromEuler(new THREE.Euler(
+              deltaMove.y * 0.01,
+              deltaMove.x * 0.01,
+              0,
+              'XYZ'
+            ));
+
+          camera.quaternion.multiplyQuaternions(deltaRotationQuaternion, camera.quaternion);
+
+          previousMousePosition.x = event.clientX;
+          previousMousePosition.y = event.clientY;
+        }
+      }
+
+      function onMouseUp() {
+        isMouseDown = false;
+      }
+
+      function onMouseClick(event) {
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+
+        raycaster.setFromCamera(mouse, camera);
+
+        const clickableObjects = [
+          cube,
+          ...numberButtons,
+          clearButton,
+          leftToggleButton,
+          rightToggleButton
+        ];
+        const intersects = raycaster.intersectObjects(clickableObjects, true);
+
+        if (intersects.length > 0) {
+          const clickedObject = intersects[0].object;
+          const parent = clickedObject.parent;
+
+          if (clickedObject === cube) {
+            calculateAddition();
+          } else if (parent && parent.userData.type === 'button') {
+            handleButtonClick(parent);
+          }
+        }
+      }
+
+      // 터치 이벤트 처리
+      let touchStartPosition = { x: 0, y: 0 };
+      let isTouching = false;
+
+      function onTouchStart(event) {
+        if (event.touches.length === 1) {
+          isTouching = true;
+          touchStartPosition.x = event.touches[0].clientX;
+          touchStartPosition.y = event.touches[0].clientY;
+        }
+      }
+
+      function onTouchMove(event) {
+        if (isTouching && event.touches.length === 1) {
+          const deltaMove = {
+            x: event.touches[0].clientX - touchStartPosition.x,
+            y: event.touches[0].clientY - touchStartPosition.y
+          };
+
+          const deltaRotationQuaternion = new THREE.Quaternion()
+            .setFromEuler(new THREE.Euler(
+              deltaMove.y * 0.01,
+              deltaMove.x * 0.01,
+              0,
+              'XYZ'
+            ));
+
+          camera.quaternion.multiplyQuaternions(deltaRotationQuaternion, camera.quaternion);
+
+          touchStartPosition.x = event.touches[0].clientX;
+          touchStartPosition.y = event.touches[0].clientY;
+        }
+      }
+
+      function onTouchEnd(event) {
+        if (event.changedTouches.length === 1) {
+          const touch = event.changedTouches[0];
+          mouse.x = (touch.clientX / window.innerWidth) * 2 - 1;
+          mouse.y = -(touch.clientY / window.innerHeight) * 2 + 1;
+
+          raycaster.setFromCamera(mouse, camera);
+          const clickableObjects = [
+            cube,
+            ...numberButtons,
+            clearButton,
+            leftToggleButton,
+            rightToggleButton
+          ];
+          const intersects = raycaster.intersectObjects(clickableObjects, true);
+
+          if (intersects.length > 0) {
+            const clickedObject = intersects[0].object;
+            const parent = clickedObject.parent;
+
+            if (clickedObject === cube) {
+              calculateAddition();
+            } else if (parent && parent.userData.type === 'button') {
+              handleButtonClick(parent);
+            }
+          }
+        }
+        isTouching = false;
+      }
+
+      // XR 세션 관리
+      function onRequestSession() {
+        return navigator.xr.requestSession('immersive-vr').then((session) => {
+          immersiveSession = session;
+          session.isImmersive = true;
+          onSessionStarted(session);
+          xrButton.textContent = 'Exit VR';
+        });
+      }
+
+      function onEndSession() {
+        if (immersiveSession) {
+          immersiveSession.end();
+        }
+      }
+
+      function onSessionStarted(session) {
+        session.addEventListener('end', onSessionEnded);
+
+        let glLayer = new XRWebGLLayer(session, renderer.getContext());
+        session.updateRenderState({ baseLayer: glLayer });
+
+        let refSpaceType = session.isImmersive ? 'local' : 'viewer';
+        session.requestReferenceSpace(refSpaceType).then((refSpace) => {
+          if (session.isImmersive) {
+            xrImmersiveRefSpace = refSpace;
+          } else {
+            xrInlineRefSpace = refSpace;
+          }
+          renderer.xr.setSession(session);
+        });
+      }
+
+      function onSessionEnded(event) {
+        if (event.session.isImmersive) {
+          immersiveSession = null;
+          xrButton.textContent = 'Enter VR';
+        }
+      }
+
+      function animate() {
+        renderer.render(scene, camera);
+      }
+
+      async function init() {
+        initThree();
+
+        // WebXR 지원 확인 및 버튼 설정
+        if (navigator.xr) {
+          navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
+            if (supported) {
+              xrButton.textContent = 'Enter VR';
+              xrButton.disabled = false;
+              xrButton.onclick = () => {
+                if (immersiveSession) {
+                  onEndSession();
+                } else {
+                  onRequestSession();
+                }
+              };
+            } else {
+              xrButton.textContent = 'VR not supported';
+            }
+          });
+
+          // 인라인 세션 시작
+          navigator.xr.requestSession('inline').then((session) => {
+            inlineSession = session;
+            onSessionStarted(session);
+            updateFov();
+          });
+        } else {
+          xrButton.textContent = 'WebXR not supported';
+        }
+
+        await loadFont();
+        updateNumberDisplays();
+        updateModeIndicator();
+        updateToggleButtons();
+        createMathSymbols();
+        createKeyboard();
+
+        renderer.setAnimationLoop(animate);
+        console.log('WebXR 3D 덧셈 계산기 초기화 완료');
+      }
+
+      init();
+    </script>
+  </body>
+</html>
