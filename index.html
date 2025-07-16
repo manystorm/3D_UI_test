@@ -1,3 +1,5 @@
+
+
 <!doctype html>
 <html>
 <head>
@@ -24,54 +26,38 @@
         #vr-button {
             position: absolute;
             bottom: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            padding: 12px 24px;
+            right: 20px;
+            padding: 12px 20px;
             border: 1px solid #fff;
             border-radius: 4px;
             background: rgba(0,0,0,0.5);
-            color: white;
-            font: 16px sans-serif;
+            color: #fff;
+            font-family: Arial, sans-serif;
+            font-size: 16px;
             cursor: pointer;
-            z-index: 999;
-            display: none;
-        }
-        #info {
-            position: absolute;
-            top: 20px;
-            left: 20px;
-            background: rgba(0,0,0,0.7);
-            padding: 10px;
-            border-radius: 4px;
-            font-size: 14px;
-            z-index: 999;
+            z-index: 1000;
+            display: none; /* Hidden by default */
         }
     </style>
 </head>
 <body>
-    <div id="info">
-        Mouse: Click and drag to rotate camera<br>
-        Touch: Tap to interact, drag to rotate<br>
-        VR: Button will appear if VR is supported
-    </div>
     <button id="vr-button">ENTER VR</button>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script type="module">
         // Essential Three.js variables
         let scene, camera, renderer;
+        let inlineSession = null;
         let raycaster, mouse;
-        let controller1, controller2;
-        let isVRSupported = false;
-        let currentVRSession = null;
+        let controller;
 
         // Interaction variables
         let isMouseDown = false;
         let previousMousePosition = { x: 0, y: 0 };
         let isTouching = false;
+        let touchStartPosition = { x: 0, y: 0 };
 
         // 3D Font
         let font = null;
-        let fontLoaded = false;
 
         // UI Elements
         const interactiveObjects = [];
@@ -82,12 +68,12 @@
         let num1 = '0';
         let num2 = '0';
         let result = 'Result:';
-        let activeInput = 'num1';
+        let activeInput = 'num1'; // 'num1' or 'num2'
 
-        // Colors
+        // Colors from plan
         const COLOR_BG = 0xf0f0f0;
         const COLOR_BUTTON = 0x4CAF50;
-        const COLOR_BUTTON_HOVER = 0x3e8e41;
+        const COLOR_BUTTON_HOVER = 0x3e8e41; // Used in animation
         const COLOR_RESULT_BG = 0xffffff;
         const COLOR_RESULT_TEXT = 0x000000;
         const COLOR_HEADER_TEXT = 0x000000;
@@ -100,11 +86,15 @@
             initThree();
             await loadFont();
             createUI();
-            await setupVR(); // VR 설정을 안전하게 처리
             updateDisplays();
-            
-            // 일반 렌더링 루프 시작
-            renderer.setAnimationLoop(animate);
+            setupVRButton();
+
+            try {
+                const session = await navigator.xr.requestSession('inline');
+                onSessionStarted(session);
+            } catch (e) {
+                console.error("Could not start WebXR inline session.", e);
+            }
         }
 
         function initThree() {
@@ -112,7 +102,7 @@
             scene.background = new THREE.Color(COLOR_BG);
 
             camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-            camera.position.set(0, 0, 0);
+            camera.position.set(0, 0, 0); // Start at origin, user can look around
 
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
@@ -132,6 +122,16 @@
             addEventListeners();
         }
 
+        function onSessionStarted(session) {
+            inlineSession = session;
+            session.addEventListener('end', () => {
+                console.log('WebXR inline session ended');
+                inlineSession = null;
+            });
+            renderer.xr.setSession(session);
+            renderer.setAnimationLoop(animate);
+        }
+
         function animate() {
             renderer.render(scene, camera);
         }
@@ -140,20 +140,17 @@
 
         function loadFont() {
             const loader = new THREE.FontLoader();
-            return new Promise((resolve) => {
+            return new Promise((resolve, reject) => {
                 loader.load(
                     'https://threejs.org/examples/fonts/helvetiker_regular.typeface.json',
                     (loadedFont) => {
                         font = loadedFont;
-                        fontLoaded = true;
-                        console.log('Font loaded successfully');
                         resolve(font);
                     },
                     undefined,
                     (error) => {
-                        console.warn('Font could not be loaded, using fallback:', error);
-                        fontLoaded = false;
-                        resolve(null);
+                        console.error('Font could not be loaded.', error);
+                        reject(error);
                     }
                 );
             });
@@ -162,9 +159,9 @@
         function createUI() {
             // Header
             const headerMesh = create3DText('Calculator', 0.2, { x: 0, y: 1.5, z: -3 }, COLOR_HEADER_TEXT);
-            if (headerMesh) scene.add(headerMesh);
+            scene.add(headerMesh);
 
-            // Input Fields
+            // Input Fields (Panels + Text)
             const inputPanelGeo = new THREE.BoxGeometry(1.5, 0.5, 0.1);
             const inputPanelMat1 = new THREE.MeshStandardMaterial({ color: COLOR_INACTIVE_INPUT });
             const inputPanelMat2 = new THREE.MeshStandardMaterial({ color: COLOR_INACTIVE_INPUT });
@@ -212,45 +209,19 @@
         }
 
         function create3DText(text, size, position, color) {
-            if (!font || !fontLoaded) {
-                console.log('Font not loaded, creating fallback text');
-                // 폰트가 없을 때 평면 텍스트 대신 간단한 지오메트리 사용
-                const canvas = document.createElement('canvas');
-                const context = canvas.getContext('2d');
-                canvas.width = 256;
-                canvas.height = 64;
-                context.fillStyle = '#ffffff';
-                context.fillRect(0, 0, canvas.width, canvas.height);
-                context.fillStyle = '#000000';
-                context.font = '20px Arial';
-                context.textAlign = 'center';
-                context.fillText(text, canvas.width / 2, canvas.height / 2);
-                
-                const texture = new THREE.CanvasTexture(canvas);
-                const material = new THREE.MeshBasicMaterial({ map: texture, transparent: true });
-                const geometry = new THREE.PlaneGeometry(size * 4, size);
-                const mesh = new THREE.Mesh(geometry, material);
-                mesh.position.set(position.x, position.y, position.z + 0.06);
-                return mesh;
-            }
-            
-            try {
-                const textGeo = new THREE.TextGeometry(text.toString(), {
-                    font: font,
-                    size: size,
-                    height: size * 0.1,
-                    curveSegments: 4,
-                });
-                textGeo.computeBoundingBox();
-                textGeo.translate(-textGeo.boundingBox.max.x * 0.5, -textGeo.boundingBox.max.y * 0.5, 0);
-                const textMat = new THREE.MeshBasicMaterial({ color: color });
-                const mesh = new THREE.Mesh(textGeo, textMat);
-                mesh.position.set(position.x, position.y, position.z + 0.06);
-                return mesh;
-            } catch (error) {
-                console.error('Error creating 3D text:', error);
-                return null;
-            }
+            if (!font) return null;
+            const textGeo = new THREE.TextGeometry(text.toString(), {
+                font: font,
+                size: size,
+                height: size * 0.1,
+                curveSegments: 4,
+            });
+            textGeo.computeBoundingBox();
+            textGeo.translate(-textGeo.boundingBox.max.x * 0.5, -textGeo.boundingBox.max.y * 0.5, 0);
+            const textMat = new THREE.MeshBasicMaterial({ color: color });
+            const mesh = new THREE.Mesh(textGeo, textMat);
+            mesh.position.set(position.x, position.y, position.z + 0.06); // Place slightly in front of panel
+            return mesh;
         }
 
         function createButton(text, position, size, color, userData) {
@@ -273,112 +244,19 @@
             return group;
         }
 
-        // --- VR SETUP (안전하게 처리) ---
-
-        async function setupVR() {
-            const vrButton = document.getElementById('vr-button');
-            
-            // WebXR 지원 확인
-            if (!navigator.xr) {
-                console.log('WebXR not supported');
-                return;
-            }
-
-            try {
-                // VR 세션 지원 확인
-                const supported = await navigator.xr.isSessionSupported('immersive-vr');
-                if (supported) {
-                    isVRSupported = true;
-                    vrButton.style.display = 'block';
-                    vrButton.addEventListener('click', onVRButtonClick);
-                    console.log('VR is supported');
-                    
-                    // 컨트롤러 설정
-                    setupControllers();
-                } else {
-                    console.log('VR not supported on this device');
-                }
-            } catch (error) {
-                console.log('Error checking VR support:', error);
-            }
-        }
-
-        function setupControllers() {
-            // 컨트롤러 설정
-            controller1 = renderer.xr.getController(0);
-            controller1.addEventListener('select', onControllerSelect);
-            scene.add(controller1);
-
-            controller2 = renderer.xr.getController(1);
-            controller2.addEventListener('select', onControllerSelect);
-            scene.add(controller2);
-
-            // 컨트롤러 레이 시각화
-            const controllerLineMat = new THREE.LineBasicMaterial({ color: 0x000000, linewidth: 2 });
-            const controllerLineGeo = new THREE.BufferGeometry().setFromPoints([
-                new THREE.Vector3(0, 0, 0),
-                new THREE.Vector3(0, 0, -5)
-            ]);
-            const line1 = new THREE.Line(controllerLineGeo, controllerLineMat);
-            const line2 = new THREE.Line(controllerLineGeo, controllerLineMat);
-            controller1.add(line1);
-            controller2.add(line2);
-        }
-
-        async function onVRButtonClick() {
-            if (!isVRSupported) {
-                alert('VR is not supported on this device');
-                return;
-            }
-
-            const vrButton = document.getElementById('vr-button');
-            
-            try {
-                if (renderer.xr.isPresenting) {
-                    // VR 세션 종료
-                    const session = renderer.xr.getSession();
-                    if (session) {
-                        await session.end();
-                    }
-                } else {
-                    // VR 세션 시작
-                    const session = await navigator.xr.requestSession('immersive-vr', {
-                        optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking']
-                    });
-                    
-                    currentVRSession = session;
-                    
-                    // 세션 이벤트 리스너
-                    session.addEventListener('end', () => {
-                        console.log('VR session ended');
-                        currentVRSession = null;
-                        vrButton.textContent = 'ENTER VR';
-                    });
-                    
-                    // 세션 시작
-                    renderer.xr.setSession(session);
-                    vrButton.textContent = 'EXIT VR';
-                    console.log('VR session started');
-                }
-            } catch (error) {
-                console.error('VR session error:', error);
-                alert('Failed to start VR session: ' + error.message);
-            }
-        }
-
         // --- STATE & DISPLAY MANAGEMENT ---
 
         function updateDisplays() {
-            // 기존 텍스트 메시 제거
+            // Clear old meshes
             if (num1DisplayMesh) scene.remove(num1DisplayMesh);
             if (num2DisplayMesh) scene.remove(num2DisplayMesh);
             if (resultDisplayMesh) scene.remove(resultDisplayMesh);
 
-            // 입력 패널 색상 업데이트
+            // Update input panel colors
             num1Panel.material.color.set(activeInput === 'num1' ? COLOR_ACTIVE_INPUT : COLOR_INACTIVE_INPUT);
             num2Panel.material.color.set(activeInput === 'num2' ? COLOR_ACTIVE_INPUT : COLOR_INACTIVE_INPUT);
 
-            // 새 텍스트 메시 생성
+            // Create new text meshes
             num1DisplayMesh = create3DText(num1, 0.2, num1Panel.position, COLOR_HEADER_TEXT);
             num2DisplayMesh = create3DText(num2, 0.2, num2Panel.position, COLOR_HEADER_TEXT);
             resultDisplayMesh = create3DText(result, 0.2, { x: 0, y: -0.5, z: -3 }, COLOR_RESULT_TEXT);
@@ -397,7 +275,7 @@
                 if (currentVal === '0' && value !== '.') {
                     currentVal = value;
                 } else {
-                    if (value === '.' && currentVal.includes('.')) return;
+                    if (value === '.' && currentVal.includes('.')) return; // Prevent multiple dots
                     currentVal += value;
                 }
                 if (activeInput === 'num1') num1 = currentVal;
@@ -434,7 +312,7 @@
             updateDisplays();
         }
 
-        // --- EVENT HANDLING ---
+        // --- EVENT HANDLING & INTERACTION ---
 
         function addEventListeners() {
             window.addEventListener('resize', onWindowResize);
@@ -454,15 +332,8 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
-        function onMouseDown(event) { 
-            isMouseDown = true; 
-            setPreviousMousePos(event.clientX, event.clientY); 
-        }
-        
-        function onMouseUp() { 
-            isMouseDown = false; 
-        }
-        
+        function onMouseDown(event) { isMouseDown = true; setPreviousMousePos(event.clientX, event.clientY); }
+        function onMouseUp() { isMouseDown = false; }
         function onMouseMove(event) {
             if (!isMouseDown) return;
             handleCameraRotation(event.clientX, event.clientY);
@@ -475,14 +346,12 @@
                 setPreviousMousePos(event.touches[0].clientX, event.touches[0].clientY);
             }
         }
-        
         function onTouchEnd(event) {
             if (event.changedTouches.length === 1) {
                 handlePointerClick(event.changedTouches[0].clientX, event.changedTouches[0].clientY);
             }
             isTouching = false;
         }
-        
         function onTouchMove(event) {
             if (!isTouching || event.touches.length !== 1) return;
             event.preventDefault();
@@ -521,24 +390,25 @@
             checkIntersections();
         }
 
-        function onControllerSelect(event) {
-            const controller = event.target;
+        function onSelectStart() {
+            if (!controller) return;
+            // Set raycaster from controller
             raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
-            raycaster.ray.direction.set(0, 0, -1).applyMatrix4(new THREE.Matrix4().extractRotation(controller.matrixWorld));
+            raycaster.ray.direction.set(0, 0, -1).applyQuaternion(controller.quaternion);
             checkIntersections();
         }
 
         function checkIntersections() {
-            // 입력 패널 클릭 확인
+            // Check for input panel clicks first
             const panelIntersects = raycaster.intersectObjects([num1Panel, num2Panel]);
             if (panelIntersects.length > 0) {
                 const clickedPanel = panelIntersects[0].object;
                 activeInput = (clickedPanel === num1Panel) ? 'num1' : 'num2';
                 updateDisplays();
-                return;
+                return; // Don't process other buttons if a panel was clicked
             }
 
-            // 버튼 클릭 확인
+            // Check for button clicks
             const intersects = raycaster.intersectObjects(interactiveObjects, true);
             if (intersects.length > 0) {
                 let parentGroup = intersects[0].object;
@@ -585,8 +455,67 @@
             anim();
         }
 
+        // --- IMMERSIVE VR SETUP ---
+
+        function setupVRButton() {
+            const vrButton = document.getElementById('vr-button');
+            if ('xr' in navigator) {
+                navigator.xr.isSessionSupported('immersive-vr').then((supported) => {
+                    if (supported) {
+                        vrButton.style.display = 'block';
+                        vrButton.addEventListener('click', onEnterVR);
+                    }
+                });
+            }
+        }
+
+        async function onEnterVR() {
+            try {
+                const session = await navigator.xr.requestSession('immersive-vr', {
+                    optionalFeatures: ['local-floor', 'controllers']
+                });
+                onImmersiveSessionStarted(session);
+            } catch (e) {
+                console.error("Could not start immersive VR session.", e);
+            }
+        }
+
+        function onImmersiveSessionStarted(session) {
+            session.addEventListener('end', onImmersiveSessionEnded);
+            renderer.xr.setSession(session);
+            setupController();
+        }
+
+        function onImmersiveSessionEnded() {
+            teardownController();
+            // Restore the inline session
+            if (inlineSession) {
+                renderer.xr.setSession(inlineSession);
+            }
+        }
+
+        function setupController() {
+            controller = renderer.xr.getController(0);
+            controller.addEventListener('selectstart', onSelectStart);
+            scene.add(controller);
+
+            // Add a visual ray to the controller
+            const lineGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -5)]);
+            const lineMat = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.5 });
+            controller.add(new THREE.Line(lineGeo, lineMat));
+        }
+
+        function teardownController() {
+            if (controller) {
+                controller.removeEventListener('selectstart', onSelectStart);
+                scene.remove(controller);
+                controller = null;
+            }
+        }
+
         // --- START THE APP ---
         init();
     </script>
 </body>
 </html>
+
